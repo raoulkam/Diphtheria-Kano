@@ -1,0 +1,619 @@
+---
+title: "Diphtheria Reproduction Rate - estimation from the Nigeria diphtheria outbreak"
+author: "R Kamadjeu et al"
+date: '`r format(Sys.Date())`'
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+    number_sections: no
+bibliography: Diphtheria.bib
+csl: the-pan-african-medical-journal.csl
+link-citations: true
+nocite:
+    - '@item1'
+    - '@item2'
+suppress-bibliography: false
+lang: en-US
+zotero: true
+---
+
+```{r setup, include=FALSE}
+remotes::install_github("paleolimbot/rbbt")
+library(rbbt)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+#Loading the dataset and packages and performing data management
+
+#packman is provides a way to seamlessly manage packages
+pacman::p_load(
+  rio,          
+  here,         
+  lubridate,    
+  aweek,        
+  incidence2,   
+  i2extras,     
+  stringr,      
+  forcats,      
+  RColorBrewer, 
+  tidyverse,     
+  janitor,
+  data.table,
+  R0,
+  table1,
+  outbreaks,
+  incidence
+)
+
+Kano_linelist_complete <- import("KANO_LINE_08_JAN.xlsx")
+
+#The variables names in the dataset were  change because non appropriate (it had space).
+Kano_linelist <- import("KANO_NEW.xlsx")
+#We pick only the clinically compatible and the lab confirmed.
+Kano_linelist2<-Kano_linelist %>% filter(fclass=="Clin compatible" | fclass=="Epid linked" | fclass=="Lab confirmed")
+line_list<-Kano_linelist %>% filter(fclass=="Clin compatible" | fclass=="Epid linked" | fclass=="Lab confirmed") %>% select(donset)
+line_list$CountCase<-1
+#We create a data frame
+
+#We create a new dataset with incidence by day. We eliminate data with missing values for donset.
+LineList<-line_list%>% filter(!is.na(donset)) %>% group_by(donset) %>% summarise(
+    N = sum(CountCase)
+)
+
+
+LineList$dayNum  <- as.Date(LineList$donset) -min(as.Date(LineList$donset))+1
+LineList$date_of_onset<-as.Date(LineList$donset)
+# days without cases are marked 0
+LineList2 <- cbind(c(rep(0,max(LineList$dayNum))),c(rep(0,max(LineList$dayNum))))
+LineList2[,1] <- c(1:max(LineList$dayNum))
+LineList2[LineList$dayNum,2] <- LineList$N
+LineList2 <- as.data.frame(LineList2)
+names(LineList2) <- c("dayNum","N")
+
+
+```
+
+
+
+
+### Data management
+
+
+```{r}
+#### Description of the diphtheria outbreak in Kano State
+Kano_linelist_complete$CountCase<-1
+Kano_linelist_lga<-Kano_linelist_complete %>% filter(fclass=="Clin compatible" | fclass=="Epid linked" | fclass=="Lab confirmed") %>%
+  group_by(lga) %>%
+  summarise(cases = sum(CountCase))%>%
+  filter(cases>=2)
+#We write as a file
+
+```
+
+We model the epidemic overall. 
+
+
+```{r}
+
+#We create two dataset based on the two picks of the outbreak
+outbreak.all<-line_list
+#specifically setting the dates
+date.onset<-as.Date(outbreak.all$donset)
+#modelling the incidence of the entire outbreak over the 470 days (August 18, 2022, and 29 Nov 2023).
+outbreak.Incidence.all.1 <- incidence::incidence(date.onset, interval = 1)
+outbreak.Incidence.all.1
+
+#finding a split
+Outbreak.all.split<- incidence:::fit_optim_split(outbreak.Incidence.all.1)
+
+Outbreak.all.split$split
+Outbreak.all.split$fit
+
+```
+
+We find the date of peak incidence
+
+```{r}
+
+group.line.list<-line_list %>% mutate(CaseTag=1) %>% 
+    group_by(donset) %>% 
+  summarise(incidence=sum(CaseTag))
+
+date.max.incidence<-group.line.list %>% filter(incidence == max(group.line.list$incidence))
+#Date of max incidence and number of cases
+date.max.incidence
+
+
+```
+
+From the date of pick incidence, we find the dates interval equal to approximately the outbreak doubling time (70 days), from date of pick incidence, until start of the outbreak
+
+```{r}
+# Load necessary package
+library(lubridate)
+
+# Define the start and end dates
+end_date <- as.Date("2022-08-18")
+start_date <- as.Date("2023-08-10")
+
+# Initialize variables
+current_date <- start_date
+date_list <- c()
+
+# Subtract 70 days repeatedly until the date is less than the start date
+while (current_date > end_date) {
+  current_date <- current_date - 70
+  if (current_date >= end_date) {
+    date_list <- c(date_list, as.character(current_date))
+  }
+}
+
+# vector list of date limits used to split the phase 1 of the outbreak.
+date_list
+
+
+```
+
+
+We get the time with highest r, for each of the 70 days interval
+
+```{r}
+
+#Vector dates identified above 
+dates <- date_list
+
+# Initialize a vector to store differences
+r_interval <- numeric(length(dates) - 1)
+r_cumulative <- numeric(length(dates) - 1)
+
+# Loop through the vector to calculate differences
+for (i in 1:(length(dates) - 1)) {
+  date1 <- dates[i]
+  date2 <- dates[i + 1]
+  print(i)
+  print(date2)
+  print(date1)
+  outbreak.interval<-line_list%>% filter(between(donset, as.Date(date2), as.Date(date1)))
+  print(nrow(outbreak.interval)) 
+  date.var <- as.Date(outbreak.interval$donset)
+  outbreak.Incidence.int <- incidence::incidence(date.var, interval = 1)
+  #r_cumulative[i]<-sum(i.1.outcome.c$counts)
+  model.fit <- fit(outbreak.Incidence.int)
+  #r.model<-model.fit$info$r
+  r_interval[i] <- model.fit$info$r
+}
+ #r_cumulative[i]
+# Print the differences, identify r for each time intervals
+r_interval
+
+
+```
+
+
+```{r}
+#fiiting the phase of mamximum growth
+dat<-as.Date(line_list$donset)
+class(dat)
+incidence.all.1<-incidence(dat,interval=1)
+best.fit <- fit_optim_split(incidence.all.1)
+#plot(incidence.all.1)
+max.fit <- fit(incidence.all.1[287:357]) #"2023-08-10", "2023-06-01"
+
+```
+
+#Modeling the interval of maximum exponential growth 
+
+```{r}
+
+  date1 <-  "2023-08-10"
+  date2 <- "2023-06-11"
+  outbreak.interval<-line_list%>% filter(between(donset, as.Date(date2), as.Date(date1)))
+  date.var <- as.Date(outbreak.interval$donset)
+  outbreak.Incidence.int <- incidence::incidence(date.var, interval = 1)
+ # outbreak.Incidence.int.split<- incidence:::fit_optim_split(outbreak.Incidence.int)
+#  r_interval <- outbreak.Incidence.int.split$fit$before$info$r
+#  r_interval
+  #plot(outbreak.Incidence.int)
+  max.growth.early.fit <- fit( outbreak.Incidence.int)
+  #plot(max.growth.early.fit)
+  
+
+```
+
+
+Plotting the combine epi curve
+
+```{r}
+
+#Example, plotting the combined epi curve.
+
+#value of r [1]  0.070505456 -0.008121465 -0.022075479  0.012369191  0.000000000
+
+EpiCurve.all.split.2<-plot(incidence.all.1, fit = best.fit$fit, color = "red") %>%
+  add_incidence_fit(Outbreak.all.split$fit) +
+  #add_incidence_fit(max.fit)+
+ geom_vline(xintercept = as.Date("2023-06-01"), color="blue", linewidth=0.5, linetype="dashed")+
+ geom_vline(xintercept = as.Date("2023-03-23"), color="blue", linewidth=0.5, linetype="dashed")+
+ geom_vline(xintercept = as.Date("2023-01-12"), color="blue", linewidth=0.5, linetype="dashed")+
+ geom_vline(xintercept = as.Date("2023-08-10"), color="black", linewidth=0.5, linetype="dashed")+ #max incidence
+ geom_vline(xintercept = as.Date("2022-11-03"), color="blue", linewidth=0.5, linetype="dashed") +
+ geom_vline(xintercept = as.Date("2022-08-25"), color="blue", linewidth=0.5, linetype="dashed")+
+  geom_vline(xintercept = as.Date("2023-08-27"), color="grey", linewidth=1, linetype="solid")+
+ geom_line(data = max.fit$info$pred, aes(x=dates,y=fit),stat="identity",linetype = "dashed",linewidth=0.5)+
+ geom_line(data = max.fit$info$pred, aes(x=dates,y=fit),stat="identity",linetype = "solid",linewidth=1.4, color="blue")+
+  #geom_line(data = max.fit$info$pred, aes(x=dates,y=lwr),stat="identity",linetype = "dashed",linewidth=0.5)+
+  #geom_line(data = max.fit$info$pred, aes(x=dates,y=upr),stat="identity",linetype = "dashed",linewidth=0.5)+
+  theme_bw()+
+  annotate(geom="text", x=as.Date("2023-07-05"), y=105, label="r = 0.078",
+              color="red",fontface = 'italic')+
+  annotate(geom="text", x=as.Date("2023-04-25"), y=105, label="r = -0.008",
+              color="black",fontface = 'italic')+  
+  annotate(geom="text", x=as.Date("2023-02-15"), y=105, label="r = -0.022",
+              color="black",fontface = 'italic')+  
+  annotate(geom="text", x=as.Date("2022-12-10"), y=105, label="r = 0.012",
+              color="black",fontface = 'italic')+    
+annotate(geom="text", x=as.Date("2022-09-20"), y=105, label="r = 0.000",
+              color="black",fontface = 'italic')+ 
+  annotate(geom="text", x=as.Date("2023-02-15"), y=122, label="Phase 1",
+              color="darkgrey",fontface = 'italic')+ 
+  annotate(geom="text", x=as.Date("2023-10-15"), y=122, label="Phase 2",
+              color="darkgrey",fontface = 'italic')+   
+annotate(
+        'curve',
+         x = as.Date("2022-08-18"), 
+         y = 118, 
+         xend = as.Date("2023-08-27"), 
+         yend = 118, 
+         linewidth=0.5,
+         curvature = 0,
+  arrow = arrow(
+  type = "closed",
+  ends = "both"
+  ), 
+  color="grey"
+  ) +
+annotate(
+        'curve',
+         x = as.Date("2023-08-27"), 
+         y = 118, 
+         xend = as.Date("2023-11-29"), 
+         yend = 118, 
+         linewidth=0.5,
+         curvature = 0,
+  arrow = arrow(
+  type = "closed",
+  ends = "both"
+  ), 
+  color="grey"
+  ) +  
+theme(
+#    axis.text.x = element_text(color = "grey20", size = 15, ),
+#    axis.text.y = element_text(color = "grey20", size = 15),
+#    legend.text=element_text(size=15),
+#    axis.title=element_text(size=15),
+#    panel.background = element_blank(),
+    panel.grid.major = element_line(colour = "gray80",linewidth=0.1),
+    panel.grid.minor = element_line(colour = "gray80",linewidth=0.1),
+#  
+) +
+  labs(
+     y = "Daily incidence (N)",
+     x = "Date of onset"
+  )
+EpiCurve.all.split.2
+
+
+```
+
+
+```{r, warning=FALSE}
+
+library(outbreaks)
+#We create two dataset based on the two picks of the outbreak
+outbreak<-line_list
+dat0 <- as.Date(outbreak$donset)
+outbreak.Incidence.1 <- incidence::incidence(dat0, interval = 1)
+outbreak.Incidence.1
+
+Outbreak.split<- incidence:::fit_optim_split(outbreak.Incidence.1)
+
+Outbreak.split$split
+Outbreak.split$fit
+
+```
+
+
+calculating serial interval
+
+
+
+```{r, warning=FALSE, echo=FALSE}
+#We get the lgas
+first.lap<-line_list
+
+#cases.by.lga<-line_list %>% 
+#  group_by(lga) %>% summarise(
+#  caseCount  = n()
+#)
+
+cases.by.lga.lap1<-first.lap %>%group_by(lga) %>% summarise(
+  caseCount  = n()
+)
+
+#head(arrange(cases.by.lga, desc(caseCount)), 10)
+
+#getting the vector of LGAs with more than 2 cases. 
+Lga.high.cases<-cases.by.lga.lap1%>%filter(caseCount>2)
+#Create a vector for LGA with more than 2 cases
+Selected.lga<-Lga.high.cases$lga
+#Set the data frame that will hold the generation time
+columns= c("Diff","lga") 
+Gen.Time.dist.df = data.frame(matrix(nrow = 0, ncol = length(columns))) 
+colnames(Gen.Time.dist.df) = columns
+#dim(Gen.Time.dist.df)
+#First, we select the specific LGA
+#We create a function that generates, for each LGA, the generation time distribution
+#We create a data.frame of dates of onset sorted by donset asc
+for (value in Selected.lga) {
+     gen.time.lga<-first.lap %>% filter(lga==!!enquo(value)) %>% arrange(donset) %>%
+          group_by(donset) %>% summarise(
+          date.count = n()
+        )
+    
+    gen.time.lga.dis<-gen.time.lga %>%
+        mutate(Diff = donset - lag(donset))%>% filter(!is.na(Diff))
+    ##we had that distribution into the distribution
+    diff.only<-gen.time.lga.dis$Diff #Create the vector
+    Gen.Time.dist.df <- rbind(Gen.Time.dist.df, 
+                      data.frame(
+                        diff = diff.only,
+                        lga = value
+                        )) #bind the vector
+}
+ 
+ #Verify
+#we create a numeric from days
+Gen.Time.dist.df$lag<-as.numeric(Gen.Time.dist.df$diff)
+#dim(Gen.Time.dist.df) 
+Gen.Time.dist.df.2<-Gen.Time.dist.df %>% filter(lag<=21)
+#summary(Gen.Time.dist.df.2$lag)
+serial.int.dist <- ggplot(Gen.Time.dist.df.2, aes(x = lag, y = after_stat(density))) +
+    geom_histogram(fill = "lightgrey", color = "lightgrey", binwidth = 2)+
+    geom_density(color = "blue", linewidth = 2, bw=1, adjust=1)+
+  geom_vline(xintercept = 2.8, colour="red", linetype="dashed", linewidth=0.75)+
+    #geom_vline(xintercept = 3.48, colour="red", linetype="solid", linewidth=0.75)+
+  theme_bw()+
+   labs(                            # add plot labels
+    x = "Time (days)",
+    y = "Density",
+    )+theme_bw()
+
+serial.int.dist
+
+#lag time is the serial interval distribution between dates of onset of symptoms of confirmed cases
+lag.time<-Gen.Time.dist.df$lag
+est.GT(serial.interval=lag.time)
+
+
+```
+
+
+
+*Reproduction numbers based on the interval of exponential growth from day
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+t1<-min(as.Date(line_list$donset))+288
+t2<-min(as.Date(line_list$donset))+358 #max incidence
+var_mean_si<-X
+var_sd_si<-Y
+GT.Diph <- generation.time("lognormal", c(var_mean_si, var_sd_si))  
+#We create a vector of cases
+#The data selected should be from the point the growth of the epidemic is exponential
+DiphData<-line_list %>% filter(donset>=t1 & donset<=t2) %>%group_by(donset) %>% summarise(
+  N = n()
+)
+
+DiphData2<-line_list%>%group_by(donset) %>% summarise(
+  N = n()
+)
+#Estimating the generation time from that interval. 
+    gen.time.interval<-line_list %>%
+        dplyr::mutate(Diff = donset - lag(donset)) %>% dplyr::filter(!is.na(Diff))
+    ##we had that distribution into the distribution
+    diff.only.interval<-gen.time.interval$Diff #Create the vector
+    
+Dates<-as.Date(DiphData$donset)
+Number<-DiphData$N
+ProcessData <- as.data.frame(cbind(Dates, Number))
+names(ProcessData) <- c("dayNum","N")
+ProcessData$dayNum <- ProcessData$dayNum-min(ProcessData$dayNum)+1
+
+res.EG.1 <- estimate.R(Number, GT=GT.Diph, methods=c("EG"))
+res.ML.1 <- estimate.R(Number, GT=GT.Diph, methods=c("ML"))
+res.SB.1 <- estimate.R(Number, GT=GT.Diph, methods=c("SB"))
+res.TD.1 <- estimate.R(Number, GT=GT.Diph, methods=c("TD"))
+#display results
+res.EG.1
+res.ML.1
+res.SB.1
+res.TD.1
+#display min, mean and median for methods
+mean(res.SB.1$estimates$SB$R)
+min(res.SB.1$estimates$SB$R)
+median(res.SB.1$estimates$SB$R)
+mean(res.TD.1$estimates$TD$R)
+min(res.TD.1$estimates$TD$R)
+median(res.TD.1$estimates$TD$R)
+
+
+
+
+```
+
+Estimating sample mean and 95% CI of the Rt distribution obtained with method SB
+
+
+```{r}
+library( boot)
+outPut.SB<-estimate.R(Number, GT=GT.Diph, methods=c("SB"),begin=1,end=69)
+#We extract GT obtained from SB method into a vector
+Data.SB<-outPut.SB$estimates$SB[1]$R
+hist(Data.SB) #Quite a non.normally distributed sample
+#Obtaining the boot mean
+Bmean <- function(data, indices) {
+  d <- data[indices] # allows boot to select sample 
+    return(mean(d))
+}
+
+# bootstrapping with 1000 replications 
+results.SB <- boot(data=Data.SB, statistic=Bmean, R=1000)
+results.SB 
+plot(results.SB)
+
+
+# get 95% confidence interval 
+boot.ci(results.SB, type=c("norm", "basic", "perc", "bca"))
+
+
+```
+
+
+Bootstrap TD
+
+```{r}
+outPut.TD<-estimate.R(Number, GT=GT.Diph, methods=c("TD"),begin=1,end=67)
+Data.TD<-outPut.TD$estimates$TD[1]$R
+hist(Data.TD) 
+# bootstrapping with 1000 replications 
+results.TD <- boot(data=Data.TD, statistic=Bmean, R=1000)
+results.TD 
+plot(results.TD)
+
+boot.ci(results.TD, type=c("norm", "basic", "perc", "bca"))
+
+```
+
+
+```{r}
+
+sensitivity.analysis(ProcessData$N, GT.type="lognormal", GT.mean=seq(1,6,1), GT.sd.range=1, begin=1, end=68, est.method="ML", sa.type="GT")
+
+```
+
+
+```{r}
+
+res.R <- estimate.R(ProcessData$N, GT=GT.Diph, methods=c("EG","ML","SB","TD"))
+res.R
+#jpeg("rplot.jpg", width = 350, height = 350)
+#plot.sa<-plot(res.R)
+#dev.off()
+#plotfit(res.R)
+```
+Sensitivity analysis
+
+
+```{r}
+
+sensitivity.analysis(ProcessData$N, GT.type="lognormal", GT.mean=seq(1,5,1), GT.sd.range=1, begin=1, end=68, est.method="EG", sa.type="GT")
+
+```
+
+```{r}
+
+Inspect<-inspect.data(ProcessData$N, GT =GT.Diph)
+Inspect
+
+```
+
+
+```{r}
+
+sa.time( ProcessData$N, GT=GT.Diph, begin = 1, end = 68, est.method="EG", t = NULL, date.first.obs = NULL)
+```
+
+```{r}
+
+tmp.ml<-sensitivity.analysis(sa.type = "GT", incid = ProcessData$N, GT.type = "lognormal", GT.mean = seq(1,6,1), GT.sd.range = 1, begin = 1, end = 67, est.method = "ML")
+tmp.eg<-sensitivity.analysis(sa.type = "GT", incid = ProcessData$N, GT.type = "lognormal", GT.mean = seq(1,6,1), GT.sd.range = 1, begin = 1, end = 67, est.method = "EG")
+tmp.ml
+tmp.eg
+
+tmp.ml.df<-as.data.frame(tmp.ml)
+tmp.eg.df<-as.data.frame(tmp.eg)
+
+tmp.ml.df<-tmp.ml.df %>% mutate(
+  method = "ML"
+)
+tmp.eg.df<-tmp.eg.df %>% mutate(
+  method = "EG"
+)
+
+tmp.bind.sens<-rbind(tmp.ml.df,tmp.eg.df)
+
+tmp.bind.sens<-tmp.bind.sens %>% mutate(
+  GT.Mean2 = round(as.double(GT.Mean), digits = 2),
+  R2 = round(as.double(R), digits = 2),
+  CI.lower2 = round(as.double(CI.lower), digits = 2),
+  CI.upper2 =round(as.double(CI.upper), digits = 2),
+)
+
+```
+
+Plotting the sensitivity analysis
+
+
+```{r}
+
+
+pd1 = position_dodge(0.4)
+
+ggplot(tmp.bind.sens, aes(x = GT.Mean2, y = R2, fill=method, color=method))+
+  geom_point(alpha=0.7) +
+  #stat_summary(fun.data=mean_cl_boot, geom="errorbar", width=5, position=pd1) +
+  #stat_summary(fun.y=mean, geom="point", size=2, position=pd1) +
+  #scale_fill_manual(values=hcl(c(15,195), 100, 60)) +
+ # scale_color_manual(values=hcl(c(15,195), 50, 40)) +
+  theme_bw()
+
+
+pd1 = position_dodge(0.2)
+fp <- ggplot(data=tmp.bind.sens, aes(x=GT.Mean2, y=R2, ymin=CI.lower2, ymax=CI.upper2,fill=method, color=method)) +
+     geom_line( color="grey") +
+        geom_pointrange(size=1.25,position=pd1,shape = 21, stroke=2) + 
+       # coord_flip() +  # flip coordinates (puts labels on y axis)
+        xlab("Mean Generation time (days)") + ylab("R0 (95% CI)") +
+        theme_bw()+
+    #theme(legend.position = 'top') 
+    theme(
+      legend.position = c(0.2,0.8),
+      axis.text.x = element_text(color = "grey20", size = 15, ),
+      axis.text.y = element_text(color = "grey20", size = 15),
+      legend.text=element_text(size=15),
+      axis.title=element_text(size=15),
+    )
+fp 
+#ggsave("fp.jpeg",fp, dpi = 300)
+
+```
+
+Testing the vector for plotting individual methods
+
+```{r}
+time<-seq(1,67,1)
+observed<-Number[-length(Number)]
+predicted.EG.1<-res.EG.1$estimates$EG$pred
+predicted.ML.1<-res.ML.1$estimates$ML$pred
+predicted.SB.1<-res.SB.1$estimates$SB$pred
+predicted.TD.1<-res.TD.1$estimates$TD$pred
+
+
+df.EG1=data.frame(time, observed, predicted.EG.1,predicted.ML.1,predicted.SB.1,predicted.TD.1) 
+
+
+```
+
